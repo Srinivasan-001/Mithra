@@ -3,15 +3,14 @@ import 'package:flutter/material.dart';
 import 'package:vibration/vibration.dart';
 import 'package:logger/logger.dart';
 import 'package:flutter/foundation.dart'; // for kDebugMode
-import 'package:firebase_auth/firebase_auth.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:geolocator/geolocator.dart';
-import 'package:twilio_flutter/twilio_flutter.dart';
 
-import '../../core/config/twilio_config.dart'; // Import Twilio config
+// Removed Firebase, Geolocator, Twilio imports as SMS logic is moved to HomeScreen
 
 class EmergencyButton extends StatefulWidget {
-  const EmergencyButton({super.key});
+  // Add a callback for when the manual trigger completes its countdown
+  final VoidCallback onManualTrigger;
+
+  const EmergencyButton({super.key, required this.onManualTrigger});
 
   @override
   State<EmergencyButton> createState() => _EmergencyButtonState();
@@ -22,25 +21,13 @@ class _EmergencyButtonState extends State<EmergencyButton> {
   Timer? _countdownTimer;
   int _remainingSeconds = 10;
   bool _isCountingDown = false;
-  bool _isSendingAlert = false; // To show loading state during SMS sending
+  // Removed _isSendingAlert state as the parent (HomeScreen) handles it
 
-  // Initialize TwilioFlutter
-  late TwilioFlutter twilioFlutter;
-
-  @override
-  void initState() {
-    super.initState();
-    // Initialize TwilioFlutter with credentials from config
-    twilioFlutter = TwilioFlutter(
-      accountSid: twilioAccountSid,
-      authToken: twilioAuthToken,
-      twilioNumber: twilioPhoneNumber,
-    );
-  }
+  // Removed Twilio initialization
 
   @override
   void dispose() {
-    _cancelCountdown(); // Ensure timer and vibration are cancelled
+    _cancelCountdown();
     super.dispose();
   }
 
@@ -59,9 +46,7 @@ class _EmergencyButtonState extends State<EmergencyButton> {
       Vibration.vibrate(pattern: [500, 500], repeat: 0);
     }
 
-    if (mounted) {
-      _showCountdownDialog();
-    }
+    _showCountdownDialog();
 
     _countdownTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
       if (_remainingSeconds > 0) {
@@ -80,149 +65,55 @@ class _EmergencyButtonState extends State<EmergencyButton> {
     setState(() {
       _isCountingDown = false;
     });
-    if (mounted && Navigator.of(context, rootNavigator: true).canPop()) {
+    // Use rootNavigator: true to pop the dialog overlay
+    if (Navigator.of(context, rootNavigator: true).canPop()) {
       Navigator.of(context, rootNavigator: true).pop();
     }
     if (kDebugMode) {
-      _logger.i("Emergency countdown cancelled by user.");
+      _logger.i("Manual emergency countdown cancelled by user.");
     }
   }
 
-  Future<void> _finalizeEmergency() async {
+  void _finalizeEmergency() {
     _countdownTimer?.cancel();
     Vibration.cancel();
     setState(() {
       _isCountingDown = false;
-      _isSendingAlert = true; // Indicate sending process started
+      // No need for _isSendingAlert here
     });
 
-    if (mounted && Navigator.of(context, rootNavigator: true).canPop()) {
+    if (Navigator.of(context, rootNavigator: true).canPop()) {
       Navigator.of(context, rootNavigator: true).pop();
     }
 
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Row(
-            children: [
-              CircularProgressIndicator(color: Colors.white),
-              SizedBox(width: 16),
-              Text('Sending Emergency Alert...'),
-            ],
-          ),
-          duration: Duration(minutes: 1), // Keep visible until dismissed or replaced
-          backgroundColor: Colors.orange,
-        ),
-      );
-    }
+    _logger.i("Manual countdown finished. Triggering parent action...");
 
-    try {
-      // 1. Get Current User
-      final user = FirebaseAuth.instance.currentUser;
-      if (user == null) {
-        throw Exception("User not logged in.");
-      }
-
-      // 2. Get Current Location
-      Position position = await Geolocator.getCurrentPosition(
-          desiredAccuracy: LocationAccuracy.high);
-      final latitude = position.latitude;
-      final longitude = position.longitude;
-      final locationLink = "https://www.google.com/maps?q=$latitude,$longitude";
-
-      // 3. Fetch User Data (including Emergency Contacts) from Firestore
-      final userDoc = await FirebaseFirestore.instance.collection('users').doc(user.uid).get();
-      if (!userDoc.exists) {
-        throw Exception("User data not found in Firestore.");
-      }
-      final userData = userDoc.data() as Map<String, dynamic>;
-      final userName = userData['name'] as String? ?? 'User';
-      final emergencyContactsData = userData['emergencyContacts'] as List<dynamic>?;
-
-      if (emergencyContactsData == null || emergencyContactsData.isEmpty) {
-        throw Exception("No emergency contacts found for the user.");
-      }
-
-      // 4. Construct SMS Message
-      final messageBody = "Emergency Alert! $userName needs help. Current location: $locationLink";
-
-      // 5. Send SMS to Emergency Contacts
-      int successCount = 0;
-      List<String> failedContacts = [];
-
-      for (var contactData in emergencyContactsData) {
-        if (contactData is Map<String, dynamic>) {
-          final contactPhone = contactData['phone'] as String?;
-          final contactName = contactData['name'] as String? ?? 'Contact';
-
-          if (contactPhone != null && contactPhone.trim().isNotEmpty) {
-            try {
-              await twilioFlutter.sendSMS(
-                toNumber: contactPhone.trim(),
-                messageBody: messageBody,
-              );
-              successCount++;
-            } catch (smsError) {
-              failedContacts.add(contactName);
-            }
-          } else {
-            failedContacts.add("$contactName (missing number)");
-          }
-        }
-      }
-
-      // 6. Show Final Feedback
-      if (mounted) {
-        ScaffoldMessenger.of(context).hideCurrentSnackBar();
-        if (successCount > 0 && failedContacts.isEmpty) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('Emergency Alert Sent Successfully!'),
-              backgroundColor: Colors.green,
-              duration: Duration(seconds: 5),
-            ),
-          );
-        } else if (successCount > 0 && failedContacts.isNotEmpty) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('Alert sent to $successCount contacts. Failed for: ${failedContacts.join(', ')}'),
-              backgroundColor: Colors.orange,
-              duration: Duration(seconds: 8),
-            ),
-          );
-        } else {
-          throw Exception("Failed to send SMS to any emergency contacts.");
-        }
-      }
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).hideCurrentSnackBar();
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Failed to send emergency alert: ${e.toString()}'),
-            backgroundColor: Colors.red,
-            duration: Duration(seconds: 8),
-          ),
-        );
-      }
-    } finally {
-      if (mounted) {
-        setState(() {
-          _isSendingAlert = false;
-        });
-      }
-    }
+    // --- CALL THE PARENT CALLBACK --- 
+    widget.onManualTrigger();
+    // --- SMS Logic is now handled by the parent (HomeScreen) ---
   }
 
   void _showCountdownDialog() {
-    if (!mounted) return;
-
     showDialog(
       context: context,
       barrierDismissible: false,
       builder: (BuildContext dialogContext) {
         return StatefulBuilder(
           builder: (context, setDialogState) {
+            // Use a local timer subscription inside the dialog state 
+            // OR rely on the main widget's setState triggering rebuilds.
+            // For simplicity, relying on main widget's setState.
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              if (_isCountingDown && mounted) {
+                 // Check if the dialog is still active before calling setDialogState
+                 // This check might not be strictly necessary if pop ensures it's gone,
+                 // but adds robustness.
+                 if (ModalRoute.of(context)?.isCurrent ?? false) {
+                    setDialogState(() {});
+                 }
+              }
+            });
+
             return AlertDialog(
               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15.0)),
               title: const Text(
@@ -239,6 +130,7 @@ class _EmergencyButtonState extends State<EmergencyButton> {
                   ),
                   const SizedBox(height: 15),
                   Text(
+                    // Use the state variable from the main widget
                     '$_remainingSeconds',
                     style: const TextStyle(
                       fontSize: 60,
@@ -285,12 +177,14 @@ class _EmergencyButtonState extends State<EmergencyButton> {
         elevation: 8,
         shadowColor: Colors.red.withAlpha(128),
       ),
-      onPressed: (_isCountingDown || _isSendingAlert) ? null : _startEmergencyCountdown,
+      // Disable button only during its own countdown
+      onPressed: _isCountingDown ? null : _startEmergencyCountdown,
       child: SizedBox(
         width: 80,
         height: 80,
         child: Center(
-          child: (_isCountingDown || _isSendingAlert)
+          // Show loading indicator only during its own countdown
+          child: _isCountingDown
               ? const CircularProgressIndicator(color: Colors.white)
               : const Icon(
                   Icons.warning_rounded,
@@ -301,3 +195,4 @@ class _EmergencyButtonState extends State<EmergencyButton> {
     );
   }
 }
+

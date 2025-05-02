@@ -47,6 +47,7 @@ dependencies:
   google_maps_flutter: ^2.7.0 # Added Google Maps
   geolocator: ^12.0.0 # Added Geolocator for GPS
   permission_handler: ^11.3.1 # Added Permission Handler
+  flutter_polyline_points: ^2.0.0 # Added for map routing
 
   # Hardware & Sensors (Keep if needed)
   sensors_plus: ^6.1.1
