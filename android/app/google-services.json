@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "13870932381",
+    "project_id": "mithra-002",
+    "storage_bucket": "mithra-002.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:13870932381:android:fbfee2f1d206a694d4cf74",
+        "android_client_info": {
+          "package_name": "com.example.mithra"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDOPJtkyJNsv0_DivMp2ed9G1N9Mpagadg"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
