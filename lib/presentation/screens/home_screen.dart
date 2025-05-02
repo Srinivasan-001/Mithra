@@ -35,12 +35,15 @@ class _HomeScreenState extends State<HomeScreen> {
   bool _locationPermissionGranted = false;
 
   // Routing
+  final TextEditingController _originController = TextEditingController();
   final TextEditingController _destinationController = TextEditingController();
   final Set<Marker> _markers = {};
   final Set<Polyline> _polylines = {};
   final List<LatLng> _polylineCoordinates = [];
   final PolylinePoints _polylinePoints = PolylinePoints();
+  LatLng? _originPosition;
   LatLng? _destinationPosition;
+  bool _useCurrentLocationAsOrigin = true; // Toggle for using current location or custom origin
 
   // Fall Detection
   late FallDetectionService _fallDetectionService;
@@ -80,6 +83,7 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   void dispose() {
     _positionStreamSubscription?.cancel();
+    _originController.dispose();
     _destinationController.dispose();
     _fallDetectionService.dispose(); // Dispose fall detection service
     super.dispose();
@@ -170,48 +174,113 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  // --- Routing Methods (Existing) ---
+  // --- Routing Methods (Updated for Origin Support) ---
+
+  LatLng? _parseCoordinates(String input) {
+    try {
+      final parts = input.split(",");
+      if (parts.length == 2) {
+        return LatLng(
+          double.parse(parts[0].trim()),
+          double.parse(parts[1].trim()),
+        );
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  void _useCurrentLocation() {
+    setState(() {
+      _useCurrentLocationAsOrigin = true;
+      _originController.clear();
+      _updateMarkers();
+    });
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Using current location as starting point')),
+    );
+  }
 
   Future<void> _getRoute() async {
-    if (_currentPosition == null || _destinationController.text.isEmpty) {
+    // Check if we have destination
+    if (_destinationController.text.isEmpty) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-            content: Text(
-              'Please ensure location is available and enter a destination.',
-            ),
+            content: Text('Please enter a destination location.'),
           ),
         );
       }
       return;
     }
 
-    LatLng? destinationCoords;
-    try {
-      final parts = _destinationController.text.split(",");
-      if (parts.length == 2) {
-        destinationCoords = LatLng(
-          double.parse(parts[0].trim()),
-          double.parse(parts[1].trim()),
+    // Determine origin point
+    LatLng? originCoords;
+    if (_useCurrentLocationAsOrigin) {
+      // Use current location as origin
+      originCoords = _currentPosition;
+      if (originCoords == null) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Current location not available. Please enter a starting point manually.'),
+            ),
+          );
+        }
+        return;
+      }
+    } else {
+      // Use entered origin
+      if (_originController.text.isEmpty) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Please enter a starting point.'),
+            ),
+          );
+        }
+        return;
+      }
+      originCoords = _parseCoordinates(_originController.text);
+      if (originCoords == null) {
+        // For simplicity, we're assuming coordinates entry. In a real app, you'd use geocoding.
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Invalid starting point format. Please use latitude,longitude'),
+            ),
+          );
+        }
+        return;
+      }
+    }
+
+    // Parse destination coordinates
+    final destinationCoords = _parseCoordinates(_destinationController.text);
+    if (destinationCoords == null) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Invalid destination format. Please use latitude,longitude'),
+          ),
         );
       }
-    } catch (_) {}
-
-    destinationCoords ??= const LatLng(37.4219999, -122.0840575); // Placeholder
+      return;
+    }
 
     setState(() {
+      _originPosition = originCoords;
       _destinationPosition = destinationCoords;
       _updateMarkers();
     });
 
     try {
       PointLatLng origin = PointLatLng(
-        _currentPosition!.latitude,
-        _currentPosition!.longitude,
+        originCoords.latitude,
+        originCoords.longitude,
       );
       PointLatLng destination = PointLatLng(
-        _destinationPosition!.latitude,
-        _destinationPosition!.longitude,
+        destinationCoords.latitude,
+        destinationCoords.longitude,
       );
 
       final request = PolylineRequest(
@@ -264,18 +333,36 @@ class _HomeScreenState extends State<HomeScreen> {
 
   void _updateMarkers() {
     _markers.clear();
+    
+    // Add current location marker (always)
     if (_currentPosition != null) {
       _markers.add(
         Marker(
           markerId: const MarkerId("currentLocation"),
           position: _currentPosition!,
-          infoWindow: const InfoWindow(title: "My Location"),
+          infoWindow: const InfoWindow(title: "My Current Location"),
           icon: BitmapDescriptor.defaultMarkerWithHue(
             BitmapDescriptor.hueAzure,
           ),
         ),
       );
     }
+    
+    // Add origin marker (if custom origin is set)
+    if (!_useCurrentLocationAsOrigin && _originPosition != null) {
+      _markers.add(
+        Marker(
+          markerId: const MarkerId("originLocation"),
+          position: _originPosition!,
+          infoWindow: const InfoWindow(title: "Starting Point"),
+          icon: BitmapDescriptor.defaultMarkerWithHue(
+            BitmapDescriptor.hueGreen,
+          ),
+        ),
+      );
+    }
+    
+    // Add destination marker
     if (_destinationPosition != null) {
       _markers.add(
         Marker(
@@ -289,38 +376,48 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Future<void> _adjustCameraToFitRoute() async {
-    if (_currentPosition == null ||
-        _destinationPosition == null ||
-        _polylineCoordinates.isEmpty) {
+    LatLng? startPoint = _useCurrentLocationAsOrigin ? _currentPosition : _originPosition;
+    
+    if (startPoint == null || _destinationPosition == null || _polylineCoordinates.isEmpty) {
       return;
     }
+    
     final GoogleMapController controller = await _mapController.future;
     LatLngBounds bounds;
-    // Simplified bounds calculation
+    
+    // Calculate bounds to fit both points
     double southWestLat = min(
-      _currentPosition!.latitude,
+      startPoint.latitude,
       _destinationPosition!.latitude,
     );
     double southWestLng = min(
-      _currentPosition!.longitude,
+      startPoint.longitude,
       _destinationPosition!.longitude,
     );
     double northEastLat = max(
-      _currentPosition!.latitude,
+      startPoint.latitude,
       _destinationPosition!.latitude,
     );
     double northEastLng = max(
-      _currentPosition!.longitude,
+      startPoint.longitude,
       _destinationPosition!.longitude,
     );
+    
+    // Add padding to bounds
+    southWestLat -= 0.01;
+    southWestLng -= 0.01;
+    northEastLat += 0.01;
+    northEastLng += 0.01;
+    
     bounds = LatLngBounds(
       southwest: LatLng(southWestLat, southWestLng),
       northeast: LatLng(northEastLat, northEastLng),
     );
+    
     controller.animateCamera(CameraUpdate.newLatLngBounds(bounds, 70));
   }
 
-  // --- Fall Detection Callback & Alert Logic ---
+  // --- Fall Detection Callback & Alert Logic (Unchanged) ---
 
   void _handleFallDetected() {
     // Prevent triggering multiple alerts simultaneously
@@ -496,7 +593,7 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  // --- Build Method ---
+  // --- Build Method (Updated with Origin Input) ---
 
   @override
   Widget build(BuildContext context) {
@@ -612,29 +709,74 @@ class _HomeScreenState extends State<HomeScreen> {
       body: SafeArea(
         child: Column(
           children: [
-            // Destination Input
+            // Route Planning Inputs
             Padding(
               padding: const EdgeInsets.all(8.0),
-              child: Row(
+              child: Column(
                 children: [
-                  Expanded(
-                    child: TextField(
-                      controller: _destinationController,
-                      decoration: const InputDecoration(
-                        hintText: "Enter destination (or lat,lng)",
-                        border: OutlineInputBorder(),
-                        contentPadding: EdgeInsets.symmetric(
-                          horizontal: 10,
-                          vertical: 5,
+                  // Origin Input Row
+                  Row(
+                    children: [
+                      Checkbox(
+                        value: _useCurrentLocationAsOrigin,
+                        onChanged: (value) {
+                          setState(() {
+                            _useCurrentLocationAsOrigin = value ?? true;
+                          });
+                        },
+                      ),
+                      const Text("Use current location"),
+                      const SizedBox(width: 8),
+                      _useCurrentLocationAsOrigin 
+                          ? Expanded(
+                              child: const Text(
+                                "Using your current location as starting point",
+                                style: TextStyle(fontStyle: FontStyle.italic),
+                              ),
+                            )
+                          : Expanded(
+                              child: TextField(
+                                controller: _originController,
+                                decoration: const InputDecoration(
+                                  hintText: "Starting point (lat,lng)",
+                                  border: OutlineInputBorder(),
+                                  contentPadding: EdgeInsets.symmetric(
+                                    horizontal: 10,
+                                    vertical: 5,
+                                  ),
+                                ),
+                                enabled: !_useCurrentLocationAsOrigin,
+                              ),
+                            ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  // Destination Input Row
+                  Row(
+                    children: [
+                      const SizedBox(width: 8),
+                      const Icon(Icons.location_on, color: Colors.red),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: TextField(
+                          controller: _destinationController,
+                          decoration: const InputDecoration(
+                            hintText: "Destination (lat,lng)",
+                            border: OutlineInputBorder(),
+                            contentPadding: EdgeInsets.symmetric(
+                              horizontal: 10,
+                              vertical: 5,
+                            ),
+                          ),
                         ),
                       ),
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  ElevatedButton.icon(
-                    icon: const Icon(Icons.directions),
-                    label: const Text("Route"),
-                    onPressed: _getRoute,
+                      const SizedBox(width: 8),
+                      ElevatedButton.icon(
+                        icon: const Icon(Icons.directions),
+                        label: const Text("Route"),
+                        onPressed: _getRoute,
+                      ),
+                    ],
                   ),
                 ],
               ),
